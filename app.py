@@ -3,185 +3,274 @@ import pickle
 import re
 import pandas as pd
 import io
+import nltk
+
+# Download NLTK data if not already downloaded
+@st.cache_resource
+def download_nltk_data():
+    try:
+        nltk.data.find('corpora/stopwords')
+        nltk.data.find('corpora/wordnet')
+    except LookupError:
+        nltk.download('stopwords')
+        nltk.download('wordnet')
+        nltk.download('punkt')
+
+# Initialize NLTK data
+download_nltk_data()
+
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
-# Add these lines to import nltk and os
-import nltk
-import os
-
-# Add the NLTK download code block here
-# Download NLTK data if not already downloaded in the environment
-# This is necessary for Streamlit Cloud deployment
-try:
-    nltk.data.find('corpora/stopwords')
-except nltk.downloader.DownloadError:
-    nltk.download('stopwords')
-except LookupError:
-    nltk.download('stopwords')
-
-try:
-    nltk.data.find('corpora/wordnet')
-except nltk.downloader.DownloadError:
-    nltk.download('wordnet')
-except LookupError:
-    nltk.download('wordnet')
-
-try:
-    nltk.data.find('corpora/omw-1.4')
-except nltk.downloader.DownloadError:
-    nltk.download('omw-1.4')
-except LookupError:
-    nltk.download('omw-1.4')
-
-# Point NLTK data to a writable directory if needed (sometimes necessary in deployment environments)
-# Although Streamlit Cloud usually handles this, it's a potential troubleshooting step
-# nltk.data.path.append(os.path.join(os.path.expanduser('~'), 'nltk_data'))
-
-
-# Initialize lemmatizer (assuming NLTK data is already downloaded)
+# Initialize lemmatizer
 lemmatizer = WordNetLemmatizer()
 
 # Define the cleaning function (should be the same as used during training)
 def clean_text_for_prediction(text):
     if not isinstance(text, str):
-        return "" # Corrected: Should return an empty string or handle appropriately
-    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+        return ""
+    
+    # Remove special characters and numbers
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
     text = text.lower()
+    
+    # Split into words
     words = text.split()
-    cleaned_words = [word for word in words if word not in stopwords.words('english')]
+    
+    # Remove stopwords and lemmatize
+    try:
+        stop_words = set(stopwords.words('english'))
+        cleaned_words = [lemmatizer.lemmatize(word) for word in words if word not in stop_words and len(word) > 2]
+    except Exception as e:
+        # Fallback if NLTK fails
+        cleaned_words = [word for word in words if len(word) > 2]
+    
     return ' '.join(cleaned_words)
 
-# Load the saved model and vectorizer
-# Add error handling for file loading
-try:
-    with open('tuned_svm_model.pkl', 'rb') as f:
-        loaded_model = pickle.load(f)
-    with open('tfidf_vectorizer.pkl', 'rb') as f:
-        loaded_vectorizer = pickle.load(f)
-    model_loaded = True
-except FileNotFoundError:
-    st.error("Error: Model or vectorizer file not found. Please ensure 'tuned_svm_model.pkl' and 'tfidf_vectorizer.pkl' are in the same directory as the app.py file.")
-    model_loaded = False
-except Exception as e:
-    st.error(f"Error loading model or vectorizer: {e}")
-    model_loaded = False
+# Load the saved model and vectorizer with caching
+@st.cache_resource
+def load_models():
+    try:
+        with open('tuned_svm_model.pkl', 'rb') as f:
+            model = pickle.load(f)
+        with open('tfidf_vectorizer.pkl', 'rb') as f:
+            vectorizer = pickle.load(f)
+        return model, vectorizer, True
+    except FileNotFoundError as e:
+        st.error(f"Model files not found: {e}")
+        st.error("Please ensure 'tuned_svm_model.pkl' and 'tfidf_vectorizer.pkl' are uploaded to your Streamlit app.")
+        return None, None, False
+    except Exception as e:
+        st.error(f"Error loading models: {e}")
+        return None, None, False
 
-# ... (rest of your app.py code) ...
-
+# Load models
+loaded_model, loaded_vectorizer, model_loaded = load_models()
 
 # Define the prediction function
 def predict_spam(message):
     if not model_loaded:
         return "Model not loaded", None
 
-    if not isinstance(message, str):
-        return "Invalid input", None # Return error for non-string input
+    if not isinstance(message, str) or len(message.strip()) == 0:
+        return "Invalid input", None
 
-    cleaned_message = clean_text_for_prediction(message)
-    message_features = loaded_vectorizer.transform([cleaned_message])
-
-    prediction = loaded_model.predict(message_features)
-    predicted_label = 'Spam' if prediction[0] == 1 else 'Ham'
-
-    # Confidence score (requires predict_proba, which might not be available for all SVMs)
-    confidence = None
-    if hasattr(loaded_model, 'predict_proba'):
-        # Get the probability of the predicted class
-        confidence = loaded_model.predict_proba(message_features)[0][prediction[0]]
-    else:
-        # For SVM without predict_proba, confidence is not directly available
-        # We could potentially use decision_function, but predict_proba is more intuitive for confidence
-        pass # Confidence remains None
-
-    return predicted_label, confidence
+    try:
+        # Clean the message
+        cleaned_message = clean_text_for_prediction(message)
+        
+        if len(cleaned_message.strip()) == 0:
+            return "Message too short or invalid", None
+        
+        # Transform the message
+        message_features = loaded_vectorizer.transform([cleaned_message])
+        
+        # Make prediction
+        prediction = loaded_model.predict(message_features)
+        predicted_label = 'Spam' if prediction[0] == 1 else 'Ham'
+        
+        # Get confidence score
+        confidence = None
+        if hasattr(loaded_model, 'predict_proba'):
+            proba = loaded_model.predict_proba(message_features)[0]
+            confidence = max(proba)  # Confidence of the predicted class
+        elif hasattr(loaded_model, 'decision_function'):
+            # For SVM, use decision function
+            decision_score = loaded_model.decision_function(message_features)[0]
+            # Convert decision function to probability-like score
+            confidence = 1 / (1 + abs(decision_score))  # Simplified confidence
+        
+        return predicted_label, confidence
+        
+    except Exception as e:
+        return f"Prediction error: {str(e)}", None
 
 # --- Streamlit App Layout ---
-st.set_page_config(page_title="Spam Classifier App", layout="wide")
+st.set_page_config(page_title="SMS Spam Classifier", layout="wide", page_icon="📱")
 
-st.title("Spam Message Classifier")
+st.title("📱 SMS Spam Classifier")
 
 st.markdown("""
-This application classifies messages as 'Spam' or 'Ham' using a pre-trained SVM model.
-You can enter a single message or upload a file for bulk testing.
+This application classifies SMS messages as **Spam** or **Ham** (legitimate) using a trained SVM model.
+Enter a message below or upload a file for bulk classification.
 """)
 
-# --- Single Message Prediction ---
-st.header("Test a Single Message")
-message_input = st.text_area("Enter your message here:", height=150)
-
-if st.button("Classify Message"):
-    if message_input:
-        predicted_label, confidence = predict_spam(message_input)
-        if predicted_label != "Model not loaded" and predicted_label != "Invalid input":
-            st.write(f"**Prediction:** {predicted_label}")
-            if confidence is not None:
-                st.write(f"**Confidence:** {confidence:.4f}")
+# Only show the interface if model is loaded
+if model_loaded:
+    # --- Single Message Prediction ---
+    st.header("🔍 Test a Single Message")
+    
+    # Add some example buttons
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📝 Try Spam Example"):
+            st.session_state.example_text = "CONGRATULATIONS! You've WON £1000 cash! Call 09061701461 to claim. Valid 12hrs only."
+    
+    with col2:
+        if st.button("✅ Try Ham Example"):
+            st.session_state.example_text = "Hey, are you free for dinner tonight? Let me know!"
+    
+    # Text input with session state
+    default_text = st.session_state.get('example_text', '')
+    message_input = st.text_area("Enter your message here:", value=default_text, height=100)
+    
+    if st.button("🔍 Classify Message", type="primary"):
+        if message_input and len(message_input.strip()) > 0:
+            with st.spinner("Analyzing message..."):
+                predicted_label, confidence = predict_spam(message_input)
+                
+            if predicted_label not in ["Model not loaded", "Invalid input", "Message too short or invalid"] and not predicted_label.startswith("Prediction error"):
+                # Display result with colors
+                if predicted_label == "Spam":
+                    st.error(f"🚨 **Prediction: {predicted_label}**")
+                else:
+                    st.success(f"✅ **Prediction: {predicted_label}**")
+                
+                if confidence is not None:
+                    st.info(f"🎯 **Confidence:** {confidence:.2%}")
+                
+                # Show cleaned text for debugging
+                cleaned = clean_text_for_prediction(message_input)
+                with st.expander("🔧 Processed Text (for debugging)"):
+                    st.text(cleaned)
+                    
             else:
-                 st.info("Confidence score not available for this model.")
-        elif predicted_label == "Invalid input":
-             st.error("Invalid input. Please enter a valid text message.")
-    else:
-        st.warning("Please enter a message to classify.")
-
-# --- Bulk Testing with File Upload ---
-st.header("Bulk Testing (Upload File)")
-uploaded_file = st.file_uploader("Upload a CSV or text file (one message per line)", type=["csv", "txt"])
-
-if uploaded_file is not None:
-    try:
-        # Read the file
-        # Assuming text file with one message per line for simplicity
-        # For CSV, you might need to adjust based on column structure
-        stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
-        messages = stringio.read().splitlines()
-
-        if not messages:
-            st.warning("Uploaded file is empty.")
+                st.error(f"❌ {predicted_label}")
         else:
-            st.write(f"Read {len(messages)} messages from the file.")
+            st.warning("⚠️ Please enter a message to classify.")
+    
+    st.markdown("---")
+    
+    # --- Bulk Testing with File Upload ---
+    st.header("📁 Bulk Testing")
+    st.markdown("Upload a text file with one message per line, or a CSV file.")
+    
+    uploaded_file = st.file_uploader("Choose a file", type=["txt", "csv"])
+    
+    if uploaded_file is not None:
+        try:
+            # Read file content
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+                if 'message' in df.columns:
+                    messages = df['message'].astype(str).tolist()
+                elif 'text' in df.columns:
+                    messages = df['text'].astype(str).tolist()
+                else:
+                    # Take the first column
+                    messages = df.iloc[:, 0].astype(str).tolist()
+            else:  # txt file
+                content = uploaded_file.read().decode('utf-8')
+                messages = [line.strip() for line in content.splitlines() if line.strip()]
+            
+            if not messages:
+                st.warning("No messages found in the uploaded file.")
+            else:
+                st.success(f"📊 Found {len(messages)} messages in the file.")
+                
+                if st.button("🚀 Process All Messages"):
+                    results = []
+                    progress_bar = st.progress(0)
+                    
+                    for i, message in enumerate(messages):
+                        predicted_label, confidence = predict_spam(message)
+                        results.append({
+                            "Message": message[:100] + "..." if len(message) > 100 else message,
+                            "Full Message": message,
+                            "Prediction": predicted_label,
+                            "Confidence": f"{confidence:.2%}" if confidence else "N/A"
+                        })
+                        progress_bar.progress((i + 1) / len(messages))
+                    
+                    results_df = pd.DataFrame(results)
+                    
+                    # Summary statistics
+                    col1, col2, col3 = st.columns(3)
+                    spam_count = sum(1 for r in results if r['Prediction'] == 'Spam')
+                    ham_count = sum(1 for r in results if r['Prediction'] == 'Ham')
+                    
+                    with col1:
+                        st.metric("📧 Total Messages", len(results))
+                    with col2:
+                        st.metric("🚨 Spam Detected", spam_count)
+                    with col3:
+                        st.metric("✅ Ham (Legitimate)", ham_count)
+                    
+                    # Display results
+                    st.subheader("📋 Results")
+                    st.dataframe(results_df[["Message", "Prediction", "Confidence"]], use_container_width=True)
+                    
+                    # Download results
+                    csv = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Results as CSV",
+                        data=csv,
+                        file_name="spam_classification_results.csv",
+                        mime="text/csv"
+                    )
+        
+        except Exception as e:
+            st.error(f"❌ Error processing file: {str(e)}")
+    
+    # --- Model Information ---
+    st.markdown("---")
+    st.header("ℹ️ Model Information")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        **🤖 Model Details:**
+        - **Algorithm:** Support Vector Machine (SVM)
+        - **Vectorizer:** TF-IDF
+        - **Preprocessing:** Text cleaning, stopword removal, lemmatization
+        - **Imbalance Handling:** SMOTE
+        """)
+    
+    with col2:
+        st.markdown("""
+        **📈 Performance Metrics:**
+        - **Accuracy:** 99.63%
+        - **Precision:** 100.00%
+        - **Recall:** 99.25%
+        - **F1-Score:** 99.63%
+        """)
 
-            results = []
-            for i, message in enumerate(messages):
-                predicted_label, confidence = predict_spam(message)
-                results.append({"Message": message, "Predicted Label": predicted_label, "Confidence": confidence})
-
-            results_df = pd.DataFrame(results)
-
-            st.subheader("Bulk Testing Results")
-            st.dataframe(results_df)
-
-    except Exception as e:
-        st.error(f"Error processing the uploaded file: {e}")
-
-# --- Model Statistics (Example - Replace with your actual model metrics) ---
-st.header("Model Statistics")
-st.markdown("""
-*   **Model Type:** Tuned Support Vector Machine (SVM)
-*   **Vectorizer:** TF-IDF
-*   **Preprocessing:** Text Cleaning (lowercase, remove punctuation/stopwords, lemmatization)
-*   **Data Imbalance Handling:** SMOTE (applied during training)
-""")
-
-# You can add more detailed metrics here if you have them saved or hardcoded
-st.subheader("Performance on Test Set (Example Metrics)")
-st.write("""
-*   Accuracy: 0.9963
-*   Precision (Spam): 1.0000
-*   Recall (Spam): 0.9925
-*   F1-score (Spam): 0.9963
-""")
-st.info("Note: These are example metrics from the notebook analysis. For a real application, load these from a configuration or results file.")
-
-# --- Instructions ---
-st.header("Instructions")
-st.markdown("""
-1.  **Save the necessary files:** Ensure the `tuned_svm_model.pkl`, `tfidf_vectorizer.pkl`, and this `app.py` file are in the same directory.
-2.  **Install libraries:** Make sure you have the required libraries installed (`streamlit`, `scikit-learn`, `pandas`, `numpy`, `nltk`, `imbalanced-learn`, `pickle`). You can install them using pip (see `requirements.txt`).
-3.  **Run the app:** Open your terminal or command prompt, navigate to the directory where you saved the files, and run the command: `streamlit run app.py`
-4.  **Use the interface:** Enter a message in the text box or upload a file for classification.
-""")
+else:
+    st.error("❌ Model files are missing. Please upload the required model files.")
+    st.markdown("""
+    **Required files:**
+    - `tuned_svm_model.pkl`
+    - `tfidf_vectorizer.pkl`
+    
+    Make sure these files are in the same directory as your app.py file.
+    """)
 
 # --- Footer ---
 st.markdown("---")
-st.write("Spam Classifier App")
+st.markdown("""
+<div style='text-align: center'>
+    <p>🔒 SMS Spam Classifier | Built with Streamlit & Scikit-learn</p>
+</div>
+""", unsafe_allow_html=True)
