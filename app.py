@@ -6,13 +6,46 @@ import io
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
+# Add these lines to import nltk and os
+import nltk
+import os
+
+# Add the NLTK download code block here
+# Download NLTK data if not already downloaded in the environment
+# This is necessary for Streamlit Cloud deployment
+try:
+    nltk.data.find('corpora/stopwords')
+except nltk.downloader.DownloadError:
+    nltk.download('stopwords')
+except LookupError:
+    nltk.download('stopwords')
+
+try:
+    nltk.data.find('corpora/wordnet')
+except nltk.downloader.DownloadError:
+    nltk.download('wordnet')
+except LookupError:
+    nltk.download('wordnet')
+
+try:
+    nltk.data.find('corpora/omw-1.4')
+except nltk.downloader.DownloadError:
+    nltk.download('omw-1.4')
+except LookupError:
+    nltk.download('omw-1.4')
+
+# Point NLTK data to a writable directory if needed (sometimes necessary in deployment environments)
+# Although Streamlit Cloud usually handles this, it's a potential troubleshooting step
+# nltk.data.path.append(os.path.join(os.path.expanduser('~'), 'nltk_data'))
+
+
 # Initialize lemmatizer (assuming NLTK data is already downloaded)
 lemmatizer = WordNetLemmatizer()
 
 # Define the cleaning function (should be the same as used during training)
 def clean_text_for_prediction(text):
     if not isinstance(text, str):
-        return 
+        return "" # Corrected: Should return an empty string or handle appropriately
     text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
     text = text.lower()
     words = text.split()
@@ -33,6 +66,8 @@ except FileNotFoundError:
 except Exception as e:
     st.error(f"Error loading model or vectorizer: {e}")
     model_loaded = False
+
+# ... (rest of your app.py code) ...
 
 
 # Define the prediction function
